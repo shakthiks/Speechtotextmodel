@@ -29,7 +29,7 @@ class LiveTranscriber:
         silence_ms: int = 700,
         max_utterance_s: float = 20.0,
         partial_every_s: float = 1.5,
-        energy_threshold: float = 0.012,
+        energy_threshold: float = 0.008,
         enable_partials: bool = True,
     ):
         # all of these can be changed while running
@@ -46,6 +46,9 @@ class LiveTranscriber:
         self._lock = threading.Lock()        # protects the audio buffer
         self._infer_lock = threading.Lock()  # one model call at a time
         self._resampler = None
+        # diagnostics shown in the UI
+        self.frames = 0       # audio frames received from the browser (0 = nothing is arriving)
+        self.level = 0.0      # smoothed mic loudness (RMS)
         self._preroll: list = []
         self._pre_n = 0
         self._reset_utterance()
@@ -53,6 +56,10 @@ class LiveTranscriber:
         self._stop = threading.Event()
         self._thread = threading.Thread(target=self._worker, daemon=True, name="live-stt")
         self._thread.start()
+
+    @property
+    def speaking(self) -> bool:
+        return self._speaking
 
     # ---------------------------------------------------------------- input
     def push_frame(self, frame) -> None:
@@ -72,7 +79,10 @@ class LiveTranscriber:
         """Accept 16 kHz mono float32 audio in [-1, 1]."""
         if len(pcm) == 0:
             return
-        voiced = float(np.sqrt(np.mean(pcm * pcm))) >= self.energy_threshold
+        rms = float(np.sqrt(np.mean(pcm * pcm)))
+        self.frames += 1
+        self.level = max(rms, self.level * 0.85)   # fast attack, slow decay: easy to read as a meter
+        voiced = rms >= self.energy_threshold
         with self._lock:
             if voiced:
                 if not self._speaking:
